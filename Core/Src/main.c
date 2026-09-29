@@ -45,8 +45,9 @@
  *  with a "How to use this driver" section. Ctrl+click any HAL_ function.
  * ============================================================================
  */
-#include <stdio.h>   /* printf, setvbuf */
-#include <string.h>  /* strlen */
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -125,10 +126,10 @@ static void UART_SendString(const char *str)
      *   - To test one bit in a register: (REGISTER & BITMASK) is nonzero
      *     when the bit is set.
      */
-
-    while(USART2->SR == 0)
+    uint8_t TXE_bit = 1 << 7; // transmit data register empty is bit 7
+    while((USART2->SR & TXE_bit) == 0)
     {
-      sleep();
+      // just wait
     }
 
     /* TODO 2: Write the current character into the data register.
