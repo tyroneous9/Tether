@@ -114,44 +114,19 @@ static void UART_SendString(const char *str)
 
   while (*str != '\0')
   {
-    /* TODO 1: Wait until the transmit data register is empty.
-     *
-     * The hardware sets a flag in USART2->SR when it has taken the previous
-     * byte and is ready for the next one. Busy-wait (loop doing nothing)
-     * until that flag is set.
-     *
-     * Hints:
-     *   - The flag's bitmask is already defined for you in stm32f446xx.h.
-     *     Its name is USART_SR_<flag name from the reference manual>.
-     *   - To test one bit in a register: (REGISTER & BITMASK) is nonzero
-     *     when the bit is set.
-     */
-    uint8_t TXE_bit = 1 << 7; // transmit data register empty is bit 7
-    while((USART2->SR & TXE_bit) == 0)
+    while((USART2->SR & USART_SR_TXE) == 0)
     {
       // just wait
     }
-
-    /* TODO 2: Write the current character into the data register.
-     *
-     * Hints:
-     *   - Writing to USART2->DR hands the byte to the hardware, which then
-     *     shifts it out on the TX pin by itself.
-     *   - The register is wider than 8 bits; cast the char to uint8_t.
-     */
+    USART2->DR = (uint8_t) *str;
 
     str++;  /* move to the next character */
   }
 
-  /* TODO 3: Wait until the whole transmission is complete.
-   *
-   * Hints:
-   *   - TODO 1's flag means "ready for the next byte," NOT "the last byte
-   *     has finished going out on the wire." A different flag in the same
-   *     register means the latter.
-   *   - Why this matters: if you disabled the UART or put the chip to sleep
-   *     right after this function returned, the final byte could be cut off.
-   */
+  while((USART2->SR & USART_SR_TC) == 0) {
+    // just wait
+  }
+
 }
 
 /*
