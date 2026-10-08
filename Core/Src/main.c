@@ -118,6 +118,8 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
+    /* USER CODE BEGIN 3 */
+    
     // Do ADC conversion
     if (HAL_ADC_Start(&hadc1) != HAL_OK)
     {
@@ -132,7 +134,6 @@ int main(void)
     {
       ADC1ConvertedValue = HAL_ADC_GetValue(&hadc1);
     }
-    /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
 }
