@@ -21,6 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -133,6 +134,11 @@ int main(void)
     else
     {
       ADC1ConvertedValue = HAL_ADC_GetValue(&hadc1);
+
+      char msg[32];
+      int len = snprintf(msg, sizeof(msg), "ADC1: %u\n", ADC1ConvertedValue);
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
+      HAL_Delay(500);
     }
   }
   /* USER CODE END 3 */
