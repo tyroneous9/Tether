@@ -41,6 +41,8 @@
 #define BUTTON_RELEASED                    0U
 #define BUTTON_PRESSED                     1U
 /* USER CODE BEGIN PM */
+#define SERVO_MIN_US 1000U
+#define SERVO_MAX_US 2000U
 
 /* USER CODE END PM */
 
@@ -64,12 +66,17 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-
+static void Servo_SetAngle(uint8_t angle);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+static void Servo_SetAngle(uint8_t angle)
+{
+  if (angle > 180) angle = 180;
+  uint32_t pulse = SERVO_MIN_US + ((uint32_t)angle * (SERVO_MAX_US - SERVO_MIN_US)) / 180U;
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
+}
 /* USER CODE END 0 */
 
 /**
