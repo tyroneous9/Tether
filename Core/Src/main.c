@@ -67,6 +67,7 @@ static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 static void servo_set_angle(uint8_t angle);
+static void servo_set_from_adc(uint16_t adc_converted_value);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -77,6 +78,13 @@ static void servo_set_angle(uint8_t angle)
   uint32_t pulse = SERVO_MIN_US + ((uint32_t)angle * (SERVO_MAX_US - SERVO_MIN_US)) / 180U;
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
 }
+
+static void servo_set_from_adc(uint16_t adc_converted_value) {
+  if (adc_converted_value > 4095) adc_converted_value = 4095;
+  uint32_t pulse = SERVO_MIN_US + (adc_converted_value * (SERVO_MAX_US - SERVO_MIN_US)) / 4095U;
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
+}
+
 /* USER CODE END 0 */
 
 /**
