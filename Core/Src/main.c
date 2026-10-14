@@ -66,12 +66,12 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
-static void Servo_SetAngle(uint8_t angle);
+static void servo_set_angle(uint8_t angle);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void Servo_SetAngle(uint8_t angle)
+static void servo_set_angle(uint8_t angle)
 {
   if (angle > 180) angle = 180;
   uint32_t pulse = SERVO_MIN_US + ((uint32_t)angle * (SERVO_MAX_US - SERVO_MIN_US)) / 180U;
@@ -134,7 +134,7 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-
+    
     /* USER CODE BEGIN 3 */
     
     // Do ADC conversion
@@ -156,6 +156,14 @@ int main(void)
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
       HAL_Delay(500);
     }
+
+    // Control servo
+    servo_set_angle(0);
+    HAL_Delay(1000);
+    servo_set_angle(90);
+    HAL_Delay(1000);
+    servo_set_angle(180);
+    HAL_Delay(1000);
   }
   /* USER CODE END 3 */
 }
