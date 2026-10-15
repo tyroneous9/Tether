@@ -35,19 +35,32 @@ The knob-to-servo loop runs entirely on the Nucleo; the Pi only observes and rep
 
 | Part | Notes |
 | --- | --- |
-| STM32 Nucleo board | Nucleo-F446RE. F4-series Cortex-M4 at up to 180 MHz, with three 12-bit ADCs for reading the pot, I2C for the external ADC, and plenty of hardware timers for triggering ADC samples and generating the servo's PWM |
+| STM32 Nucleo board | Nucleo-F446RE. F4-series Cortex-M4 rated up to 180 MHz (this project clocks it at 84 MHz from the internal HSI through the PLL; all timer math below assumes that), with three 12-bit ADCs for reading the pot, I2C for the external ADC, and plenty of hardware timers for triggering ADC samples and generating the servo's PWM |
 | Potentiometer | B10K: 10 kΩ, linear taper ("B"). Passive part, no firmware of its own: it's a voltage divider. Outer legs to 3.3 V and GND (swapping them only reverses direction), wiper (middle leg) to an ADC-capable pin: PA0, labelled A0 on the Nucleo. Power it from 3.3 V, not 5 V: the ADC input must stay between 0 V and VDDA (3.3 V). An optional 100 nF capacitor from wiper to GND cuts noise. Unsure which leg is which? The pair reading a constant 10 kΩ on a multimeter are the outer legs |
 | External ADC (side exercise) | ADS7830 (Texas Instruments): 8-bit, 8-channel, I2C. Address 0x48–0x4B depending on its A0/A1 pins (fixed on a breakout module; scan to find it). Read by writing one command byte (channel + power-down/reference bits) and reading back one byte (0–255). Two datasheet gotchas: the channel-select bits aren't in plain binary order, and the internal reference gives a 2.5 V full scale, so a 3.3 V pot would clip at 255 for the last part of its turn. Choose the reference setting that matches how the module is wired. Powered from 3.3 V. Used to learn I2C, not in the main loop |
 | Servo | Blue micro servo, unlabelled: an SG90-class hobby servo. Standard hobby-servo interface: a pulse every 20 ms (50 Hz), pulse width sets the angle, about 1 ms at one end, 1.5 ms centre, 2 ms at the other end (many SG90s go further, roughly 0.5–2.5 ms; find the real limits by testing, and back off if it buzzes or strains at an end). About 180° of travel. Wires: red is power (middle), the darkest is GND, the lightest (orange/yellow) is signal. Confirm which is which before powering it (see [Breadboard layout](#breadboard-layout)) |
 | Raspberry Pi 5 | Target for the custom Linux image |
-| Link | USB (ST-Link virtual COM port) or UART |
+| Link | USB first: USART2 is wired to the ST-Link virtual COM port, which appears as `/dev/ttyACM0` on Linux. Later, a second UART (USART1) wired to the Pi's GPIO header. USART2 can't be used for the header link because its pins (PA2/PA3) are tied to the ST-Link by default |
 | Breadboard | Full-size (830-point) solderless breadboard. The Nucleo and Pi sit beside it; the pot, ADS7830 module, servo connection and power wiring go on it |
 | Jumper wires | Male-to-male for the Nucleo's Arduino headers (female sockets) and the servo's 3-pin female connector; female-to-male for the Nucleo's morpho pins and the Pi's GPIO header (male pins) |
 | Servo power supply | Separate 5 V supply, 1 A or more: a USB breadboard power module, a 5 V wall adapter through a barrel-jack breadboard adapter, or 4×AA (about 6 V, within the SG90's range). Never power the servo from the Nucleo or the Pi: its current spikes, hundreds of mA when it stalls, can brown out and reset the board |
 | Capacitor | 100–470 µF electrolytic, rated 10 V or more, across the servo supply rail near the servo. Absorbs the servo's current spikes so they don't disturb the rest of the circuit |
-| Debug aids | USB-to-serial console cable for the Pi (to see the boot log independent of SSH/network); a multimeter to confirm the wiper sweeps smoothly from 0 V to 3.3 V; optionally a cheap logic analyzer to measure the servo's pulse widths and decode the ADS7830's I2C traffic |
+| Debug aids | Serial console for the Pi, to see the boot log independent of SSH/network. The Pi 5's debug UART is a 3-pin JST-SH connector, so use the Raspberry Pi Debug Probe or a USB-to-serial adapter with a JST-SH 3-pin cable; a plain jumper-wire USB-serial cable won't plug in; a multimeter to confirm the wiper sweeps smoothly from 0 V to 3.3 V; optionally a cheap logic analyzer to measure the servo's pulse widths and decode the ADS7830's I2C traffic |
 
 ### Breadboard layout
+
+**Nucleo pin assignments.** One place to check before assigning a new pin in CubeMX:
+
+| Function | MCU pin | Nucleo header | Peripheral |
+| --- | --- | --- | --- |
+| Pot wiper (ADC input) | PA0 | A0 | ADC1 channel 0 |
+| Servo signal (PWM) | PA6 | D12 | TIM3 channel 1 |
+| Debug serial to PC | PA2 / PA3 | (ST-Link, not on the header) | USART2 |
+| Serial link to Pi | PA9 (TX) / PA10 (RX) | D8 / D2 | USART1 |
+| ADS7830 SCL / SDA | PB8 / PB9 | D15 / D14 | I2C1 |
+| User LED | PA5 | D13 | GPIO (LD2) |
+| User button | PC13 | (on board) | EXTI |
+| ADC sample trigger | (no pin) | | TIM2 TRGO |
 
 - **Two power rails, kept separate.** One rail carries 3.3 V from the Nucleo's 3V3 pin for logic: the pot and the ADS7830. The other carries the 5 V servo supply. Label them. On some full-size breadboards the rails are split halfway along, so check continuity with a multimeter before you trust them.
 - **One shared ground.** Nucleo GND, Pi GND, the servo supply's GND and the servo's GND wire all go to the same ground rail. Without a common ground, the PWM and UART signals have no reference voltage and won't work reliably.
@@ -63,12 +76,47 @@ The knob-to-servo loop runs entirely on the Nucleo; the Pi only observes and rep
 
 - ADC reads the wiper voltage, triggered by a hardware timer at a fixed rate (e.g. 1 kHz) with results moved by DMA, so sampling is evenly spaced and the CPU never busy-waits on a conversion
 - Filter the raw 12-bit reading (moving average or a simple IIR low-pass) and apply a small deadband, so ADC noise of a few counts doesn't make the servo jitter
-- Map the filtered value (0–4095) linearly onto the servo's pulse-width range (e.g. 1000–2000 µs to start, widened once the real limits are known)
-- Generate the servo signal with a timer in PWM mode, e.g. TIM3 channel 2 on PC7 (D9 on the Nucleo's Arduino header). Set the prescaler so the timer ticks at 1 MHz (1 µs per count) and the period to 20000 counts (20 ms); the compare value is then the pulse width in µs. Check in CubeMX that the pin isn't already in use
+- Map the filtered value linearly onto the servo's pulse-width range (e.g. 1000–2000 µs to start, widened once the real limits are known). The input range is nominally 0–4095 (12-bit ADC), but use the pot's measured end readings, since a real pot rarely reaches exactly 0 and 4095
+- Generate the servo signal with TIM3 channel 1 in PWM mode 1 on PA6 (D12 on the Nucleo's Arduino header). With the 84 MHz timer clock, prescaler 83 gives 1 MHz ticks (1 µs per count) and period 19999 gives 20000 counts (20 ms); both registers hold the value minus one. The compare value is then the pulse width in µs, set with `__HAL_TIM_SET_COMPARE`
 - The servo only takes a new position every 20 ms, so update the compare value at most once per PWM period; the 1 kHz ADC sampling feeds the filter in between
-- At power-up, read and filter the pot before enabling the PWM output, so the servo goes straight to where the knob points instead of jumping to a default position first
-- Emit the commanded angle over UART/USB-CDC as plain text (`POS:90\n`). A hobby servo doesn't report its actual position, so this is the angle the Nucleo commanded, not a measurement
+- At power-up, read and filter the pot and set the compare value before calling `HAL_TIM_PWM_Start`, so the servo goes straight to where the knob points instead of jumping to CubeMX's default 1500 µs first. With DMA sampling, that means waiting for the first full buffer (20 ms)
+- Emit the commanded angle over UART as plain text (`POS:90\n`): USART2 to the PC/Pi over the ST-Link USB while developing, USART1 to the Pi's header later. (The Nucleo-64 has no USB connector wired to the F446's own USB peripheral, so USB-CDC isn't an option without extra hardware.) A hobby servo doesn't report its actual position, so this is the angle the Nucleo commanded, not a measurement
 - Side exercise: read the same pot through the ADS7830 over I2C and print both readings side by side. The internal reading (0–4095) should be about 16× the external one (0–255) if both use the same reference voltage. Start with an I2C address scan (`HAL_I2C_IsDeviceReady` over 0x08–0x77) and remember that HAL takes the address shifted left by one (`0x4B << 1`)
+
+#### Sampling and filtering the pot
+
+The first working version polls the ADC from the main loop (`HAL_ADC_Start` → `HAL_ADC_PollForConversion` → `HAL_ADC_GetValue`). That works, but how often it samples depends on whatever else the loop is doing, and the CPU waits on every conversion. This step replaces it with hardware-paced sampling and then cleans up the readings.
+
+**1. Timer-triggered sampling.** A spare timer starts each conversion, so samples are evenly spaced no matter what the CPU is doing.
+
+- In CubeMX, enable TIM2 with internal clock and set *Trigger Event Selection* (TRGO) to *Update Event*. With the 84 MHz APB1 timer clock, prescaler 83 and period 999 give 1 kHz (1 µs ticks, 1000 per period)
+- On ADC1, set *External Trigger Conversion Source* to *Timer 2 Trigger Out event*, edge *Rising*, and turn *Continuous Conversion Mode* off: the timer, not the ADC, decides when to convert
+- The sample time already raised to 84 cycles stays: it gives the pot's 10 kΩ source impedance time to charge the ADC's sampling capacitor
+
+**2. DMA into a buffer.** DMA copies each result into RAM without the CPU, so the main loop never blocks on a conversion.
+
+- Add a DMA request for ADC1 (DMA2 Stream 0, Channel 0 on the F446), mode *Circular*, data width *Half Word* on both sides, and enable *DMA Continuous Requests* on the ADC
+- Use a buffer of 20 samples (`uint16_t adc_buf[20]`). At 1 kHz that's exactly one 20 ms servo period, so each servo update averages the samples taken since the last one
+- Start order: `HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, 20)`, then `HAL_TIM_Base_Start(&htim2)` to start triggering. The circular buffer then refills forever without any further calls
+- DMA writes the buffer while the main loop reads it, so a sum can mix samples from two passes. For an average that's harmless. If it ever matters, process each half in `HAL_ADC_ConvHalfCpltCallback` / `HAL_ADC_ConvCpltCallback` while DMA fills the other half
+
+**3. Filter.** Even with the knob still, the raw reading wanders by a few counts from electrical noise. Two standard options, cheapest first:
+
+- **Moving average:** sum the 20-sample buffer and divide by 20. Averaging N samples cuts random noise by about √N (≈4.5× for 20), and it adds about 10 ms of lag (half the window)
+- **Exponential (IIR) low-pass:** `filtered += (raw - filtered) / k`, applied once per new value. Larger `k` is smoother but slower. Use integer math: keep `filtered` scaled up (e.g. ×16) so the division doesn't throw away the low bits, and pick `k` as a power of two so the division is a shift
+- Start with the moving average alone. Add the IIR on top only if the servo still jitters
+
+**4. Deadband.** Even a filtered value moves by a count or two, and the servo would twitch chasing it. Only send a new pulse width when the filtered reading has moved more than a threshold away from the last value actually sent.
+
+- Size it from measurements, not guesses: hold the knob still, watch the filtered value over UART, and set the threshold just above its peak-to-peak wander
+- Useful upper bound: the SG90 datasheet lists a 10 µs dead band, so the servo ignores changes smaller than that anyway. With a 1000 µs pulse span over 4096 counts, 10 µs is about 40 counts. A deadband well under that costs no visible precision
+- The cost of a deadband is that small, slow knob movements are ignored until they cross the threshold, then the servo steps. Too large feels sticky; too small lets jitter through
+
+**5. Verify.** Print raw and filtered readings side by side (`RAW:2048 FILT:2046`) at a few Hz:
+
+- Knob still: raw jumps around by several counts, filtered moves by only a count or two
+- Knob turned quickly: filtered follows within a few tens of ms. If it visibly lags behind your hand, the filter is too heavy
+- Servo: holds still without buzzing or twitching when the knob is untouched
 
 > **Why a pot changes the firmware.** An encoder counts relative steps forever; a pot gives an *absolute* angle over a limited sweep (about 270–300°). That means no counting or overflow handling, but you trade it for analog problems: noise, a non-zero reading floor, and limited resolution (4096 levels across the whole sweep). Filtering, deadband and range-mapping are the standard answers.
 
@@ -85,7 +133,7 @@ The knob-to-servo loop runs entirely on the Nucleo; the Pi only observes and rep
 
 **2. Device tree overlay**
 
-- The Nucleo is wired to the Pi's header UART (TX↔RX, RX↔TX, shared GND through the breadboard's ground rail; both are 3.3 V logic). An overlay adds a **child node under that UART** describing the Nucleo, with its own `compatible` string (e.g. `"<yourname>,tether"`). This is the standard device tree pattern for a device attached to a serial port, and it's what lets the kernel bind the driver automatically
+- The Nucleo's USART1 (PA9 TX on D8, PA10 RX on D2) is wired to the Pi's header UART (GPIO14 TX, GPIO15 RX; TX↔RX, RX↔TX, shared GND through the breadboard's ground rail; both are 3.3 V logic). An overlay adds a **child node under that UART** describing the Nucleo, with its own `compatible` string (e.g. `"<yourname>,tether"`). This is the standard device tree pattern for a device attached to a serial port, and it's what lets the kernel bind the driver automatically
 - The Pi 5's dedicated 3-pin debug UART connector carries the serial console, so the header UART stays free for the Nucleo
 
 **3. Kernel driver**
@@ -107,17 +155,20 @@ The knob-to-servo loop runs entirely on the Nucleo; the Pi only observes and rep
 
 ## Repository layout
 
-Suggested structure:
+The STM32 firmware is a CubeMX-generated CMake project at the repository root. CubeMX regenerates `Core/`, `Drivers/` and the build files in place, and only keeps hand-written code inside `USER CODE BEGIN/END` blocks. The Pi-side pieces go in their own directories next to it:
 
 ```
 .
-├── firmware/          # STM32 Nucleo firmware (ADC sampling, filtering, servo PWM)
+├── Tether.ioc         # CubeMX configuration (pins, clocks, peripherals)
+├── Core/              # Firmware sources: main.c, HAL MSP init, interrupts
+├── Drivers/           # STM32 HAL + CMSIS (generated, don't edit)
+├── cmake/, CMakeLists.txt, CMakePresets.json, startup + linker script
 ├── driver/            # serdev kernel driver (out-of-tree module)
 ├── dts/               # Device tree overlay for the header-UART child node
 ├── app/               # User-space daemon + systemd unit
 ├── meta-knob-demo/    # Yocto layer with recipes for the driver, app and image
-├── docs/              # Design notes, debugging writeup, wiring photos
-└── README.md
+├── docs/              # Plan, datasheets, design notes, debugging writeup, wiring photos
+└── README.md          # (to add)
 ```
 
 ## Build order
@@ -125,14 +176,19 @@ Suggested structure:
 - [ ] Nucleo, one component at a time:
   - [ ] UART printing to the PC over the ST-Link virtual COM port (the debug channel for everything after it)
   - [ ] Pot alone: check the wiper sweeps 0–3.3 V with a multimeter, then a polled ADC read on PA0, printing raw counts
-  - [ ] Timer-triggered ADC with DMA at 1 kHz, plus filter and deadband; print raw and filtered side by side
-  - [ ] Servo alone, pot ignored: PWM on PC7, check the 50 Hz period and pulse width with a logic analyzer (or an LED) before connecting the servo, then sweep through fixed angles to find its real pulse-width limits
+  - [ ] Timer-triggered ADC with DMA at 1 kHz, plus filter and deadband (see [Sampling and filtering the pot](#sampling-and-filtering-the-pot)):
+    - [ ] TIM2 TRGO at 1 kHz triggering ADC1; check the rate by counting conversions per second
+    - [ ] Circular DMA into a 20-sample buffer; main loop no longer calls `HAL_ADC_PollForConversion`
+    - [ ] Moving average over the buffer; print raw and filtered side by side
+    - [ ] Measure the filtered value's wander with the knob still, and set the deadband just above it
+    - [ ] (If still jittery) add an IIR low-pass on top
+  - [ ] Servo alone, pot ignored: PWM on PA6 (D12), check the 50 Hz period and pulse width with a logic analyzer (or an LED) before connecting the servo, then sweep through fixed angles to find its real pulse-width limits
   - [ ] Close the loop: map the filtered pot reading onto the servo's pulse width
   - [ ] Emit `POS:` lines over UART
 - [ ] (Side exercise) ADS7830 over I2C: address scan, read one channel, compare against the internal ADC on the same pot
 - [ ] Pi: get a stock image talking to the Nucleo over USB-serial first, as cheap end-to-end validation before investing in Yocto/driver work
 - [ ] Stand up a minimal Yocto build (`poky` + `meta-raspberrypi`) that boots on the Pi 5 and reaches a login prompt over the serial console
-- [ ] Move the Nucleo link from USB to the Pi's header UART, and write the device tree overlay that adds a child node for it under that UART
+- [ ] Move the Nucleo link from USB to the Pi's header UART (enable USART1 on the Nucleo), and write the device tree overlay that adds a child node for it under that UART
 - [ ] Write the serdev driver, bind it via the overlay's `compatible` string, expose position through `sysfs`
 - [ ] Write the user-space daemon, package it as a systemd service
 - [ ] Fold the daemon + driver into the `meta-knob-demo` layer so the whole thing builds as one image
