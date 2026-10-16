@@ -11,5 +11,25 @@
 			"--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-g++*"
 		],
 		"stm32cube-ide-clangd.path": "cube"
+	},
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			
+			{
+				"type": "stlinkgdbtarget",
+				"request": "launch",
+				"name": "STM32Cube: Launch ST-Link GDB Server",
+				"origin": "snippet",
+				"cwd": "${workspaceFolder}",
+				"preBuild": "${command:st-stm32-ide-debug-launch.build}",
+				"runEntry": "main",
+				"imagesAndSymbols": [
+					{
+						"imageFileName": "${command:st-stm32-ide-debug-launch.get-projects-binary-from-context1}"
+					}
+				]
+			}
+		]
 	}
 }

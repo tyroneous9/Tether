@@ -41,8 +41,8 @@
 #define BUTTON_RELEASED                    0U
 #define BUTTON_PRESSED                     1U
 /* USER CODE BEGIN PM */
-#define SERVO_MIN_US 1000U
-#define SERVO_MAX_US 2000U
+#define SERVO_MIN_US 500U
+#define SERVO_MAX_US 2400U
 
 /* USER CODE END PM */
 
@@ -158,20 +158,16 @@ int main(void)
     else
     {
       ADC1ConvertedValue = HAL_ADC_GetValue(&hadc1);
-
-      char msg[32];
-      int len = snprintf(msg, sizeof(msg), "ADC1: %u\n", ADC1ConvertedValue);
-      HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
-      HAL_Delay(500);
+      int tick = HAL_GetTick();
+      if (tick % 500 == 0) {
+        char msg[32];
+        int len = snprintf(msg, sizeof(msg), "ADC1: %u (Tick: %d)\n", ADC1ConvertedValue, tick);
+        HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
+      }
     }
 
     // Control servo
-    servo_set_angle(0);
-    HAL_Delay(1000);
-    servo_set_angle(90);
-    HAL_Delay(1000);
-    servo_set_angle(180);
-    HAL_Delay(1000);
+    servo_set_from_adc(ADC1ConvertedValue);
   }
   /* USER CODE END 3 */
 }
