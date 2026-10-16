@@ -85,19 +85,59 @@ The knob-to-servo loop runs entirely on the Nucleo; the Pi only observes and rep
 
 #### Sampling and filtering the pot
 
-The first working version polls the ADC from the main loop (`HAL_ADC_Start` → `HAL_ADC_PollForConversion` → `HAL_ADC_GetValue`). That works, but how often it samples depends on whatever else the loop is doing, and the CPU waits on every conversion. This step replaces it with hardware-paced sampling and then cleans up the readings.
+The first working version polls the ADC from the main loop (`HAL_ADC_Start` → `HAL_ADC_PollForConversion` → `HAL_ADC_GetValue`), with the CPU doing every step in sequence. That causes two problems:
 
-**1. Timer-triggered sampling.** A spare timer starts each conversion, so samples are evenly spaced no matter what the CPU is doing.
+- **Sample timing depends on the rest of the loop.** Any delay, print or extra work in the loop shifts when the next sample is taken, so samples arrive at irregular times. A filter needs evenly spaced samples: an average of the last 20 readings only means "the knob's position over the last 20 ms" if they were taken exactly 1 ms apart.
+- **The CPU is tied up.** While it waits on a conversion it can't do anything else, and the loop also has to filter, update the servo and send `POS:` lines to the Pi. A loop built out of waits gets harder to manage with every task added.
 
-- In CubeMX, enable TIM2 with internal clock and set *Trigger Event Selection* (TRGO) to *Update Event*. With the 84 MHz APB1 timer clock, prescaler 83 and period 999 give 1 kHz (1 µs ticks, 1000 per period)
-- On ADC1, set *External Trigger Conversion Source* to *Timer 2 Trigger Out event*, edge *Rising*, and turn *Continuous Conversion Mode* off: the timer, not the ADC, decides when to convert
+This step fixes the first with a timer trigger and the second with DMA, then cleans up the readings. Polling would honestly be good enough to make a knob move a servo; the point of doing it this way is a properly working filter, a CPU left free for the UART link, and the standard embedded pattern: a timer paces the hardware, DMA moves the data, and the CPU only processes results.
+
+```
+TIM2 (1 kHz) ──TRGO──▶ ADC1 converts ──▶ DMA copies ──▶ adc_buf[20] in RAM
+   hardware              hardware          hardware        ▲
+                                                           │
+                        main loop reads it every 20 ms ────┘
+```
+
+**1. Timer-triggered sampling.** A second timer starts each conversion, so samples are exactly 1 ms apart no matter what the CPU is doing.
+
+- **How it works.** Each time a timer's counter wraps back to 0 (its *update event*), it can send a pulse on its **TRGO** (trigger output). TRGO is a connection inside the chip, not a pin. The ADC is told to start a conversion on each TRGO pulse instead of on a software `HAL_ADC_Start`. No code runs when the trigger fires: the pulse goes straight from timer to ADC
+- **Why a second timer, not another TIM3 channel.** A timer's prescaler and period are shared by all four of its channels, so every channel runs at the same frequency; only the compare value (pulse width) differs per channel. TIM3 wraps every 20 ms for the servo, so anything it triggers fires at 50 Hz at most, giving one sample per servo period and nothing to average. 1 kHz needs its own counter. Rule of thumb: signals that need different frequencies need different timers; signals that share a frequency and differ only in pulse width can share a timer as separate channels
+- **Why 1 kHz.** Not to catch fast motion (a hand turning a knob changes far slower than 10 Hz), but to get 20 samples per 20 ms servo period to average. Anything from a few hundred Hz to a few kHz works; 1 kHz keeps the numbers simple
+
+CubeMX settings:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| TIM2 Clock Source | Internal Clock | Turns the timer on, counting from the 84 MHz APB1 timer clock (same as TIM3) |
+| TIM2 Prescaler | 83 | 84 MHz ÷ 84 = 1 MHz, one count per µs |
+| TIM2 Period | 999 | Counts 0–999 = 1000 µs, so it wraps every 1 ms (1 kHz) |
+| TIM2 Trigger Event Selection | Update Event | Sends TRGO at each wrap-around: one pulse per period. No channel or pin is configured |
+| ADC1 External Trigger Conversion Source | Timer 2 Trigger Out event | Conversions start on TIM2's pulses, not on software calls |
+| ADC1 External Trigger Conversion Edge | Rising | One conversion per pulse |
+| ADC1 Continuous Conversion Mode | Disabled | Enabled, the ADC would restart as soon as each conversion finished, as fast as it can, ignoring the timer's pacing |
+
 - The sample time already raised to 84 cycles stays: it gives the pot's 10 kΩ source impedance time to charge the ADC's sampling capacitor
+- Check: count conversions in `HAL_ADC_ConvCpltCallback` and print the count once per second. It should read about 1000
 
-**2. DMA into a buffer.** DMA copies each result into RAM without the CPU, so the main loop never blocks on a conversion.
+**2. DMA into a buffer.** The trigger creates a new problem: the ADC now finishes a conversion every 1 ms and puts it in its data register (`ADC1->DR`), which holds a single value and is overwritten by the next conversion 1 ms later. Each result has to be copied out in time. Three options:
 
-- Add a DMA request for ADC1 (DMA2 Stream 0, Channel 0 on the F446), mode *Circular*, data width *Half Word* on both sides, and enable *DMA Continuous Requests* on the ADC
-- Use a buffer of 20 samples (`uint16_t adc_buf[20]`). At 1 kHz that's exactly one 20 ms servo period, so each servo update averages the samples taken since the last one
-- Start order: `HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, 20)`, then `HAL_TIM_Base_Start(&htim2)` to start triggering. The circular buffer then refills forever without any further calls
+- **Polling:** the CPU checks every millisecond. Back to the CPU being tied up
+- **Interrupt per conversion:** works, but it's 1000 interruptions a second to copy 2 bytes each
+- **DMA (direct memory access):** a separate hardware unit inside the chip whose only job is moving data. Configured once ("each time the ADC has a result, copy it from `ADC1->DR` into the next slot of this array"), it then runs with no CPU involvement
+
+CubeMX settings:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| ADC1 DMA request | Add one | Connects the ADC's "result ready" signal to a DMA stream. The F446 has fixed routing for which stream can serve which peripheral; CubeMX picks a valid one (DMA2, Stream 0 or 4, Channel 0) |
+| DMA Mode | Circular | At the end of the array, wrap to slot 0 and keep going, so the buffer always holds the latest samples. *Normal* would stop after one pass |
+| Data width | Half Word (both sides) | 16 bits: the 12-bit result fits, 2 bytes per sample, matching `uint16_t` |
+| ADC1 DMA Continuous Requests | Enabled | With it disabled, the ADC stops asking DMA for transfers after the first pass, even in circular mode, and sampling silently stops after 20 ms |
+
+- Use a buffer of 20 samples: `volatile uint16_t adc_buf[20]`. At 1 kHz that's exactly one 20 ms servo period, so each servo update averages every sample taken since the last one. `volatile` because DMA changes it behind the compiler's back; without it the compiler may assume the values never change and reuse stale copies
+- Start order: `HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buf, 20)`, then `HAL_TIM_Base_Start(&htim2)`. Arm the receiving end before starting the source: if the timer ran first, conversions would finish with no DMA ready to collect them, values would be lost, and the ADC would flag an *overrun* error. After these two calls the hardware runs on its own; nothing else needs to be called again
+- The polled `HAL_ADC_Start` / `HAL_ADC_PollForConversion` / `HAL_ADC_GetValue` block leaves the main loop entirely. The loop now just reads `adc_buf` every 20 ms (`HAL_GetTick`-based, not `HAL_Delay`), filters it and updates the servo
 - DMA writes the buffer while the main loop reads it, so a sum can mix samples from two passes. For an average that's harmless. If it ever matters, process each half in `HAL_ADC_ConvHalfCpltCallback` / `HAL_ADC_ConvCpltCallback` while DMA fills the other half
 
 **3. Filter.** Even with the knob still, the raw reading wanders by a few counts from electrical noise. Two standard options, cheapest first:
