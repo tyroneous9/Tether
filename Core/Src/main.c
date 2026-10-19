@@ -141,8 +141,8 @@ int main(void)
     Error_Handler();
   }
 
-  // Start ADC
-  if (HAL_ADC_Start(&hadc1) != HAL_OK) 
+  // Start ADC in interrupt mode
+  if (HAL_ADC_Start_IT(&hadc1) != HAL_OK)
   {
     Error_Handler();
   }
