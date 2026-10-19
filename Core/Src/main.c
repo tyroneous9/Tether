@@ -58,6 +58,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 __IO uint16_t ADC1ConvertedValue = 0;
+__IO uint32_t adc_conversion_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -70,6 +71,7 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 static void servo_set_angle(uint8_t angle);
 static void servo_set_from_adc(uint16_t adc_converted_value);
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -85,6 +87,15 @@ static void servo_set_from_adc(uint16_t adc_converted_value) {
   if (adc_converted_value > 4095) adc_converted_value = 4095;
   uint32_t pulse = SERVO_MIN_US + (adc_converted_value * (SERVO_MAX_US - SERVO_MIN_US)) / 4095U;
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
+{
+  if (hadc->Instance == ADC1)
+  {
+    ADC1ConvertedValue = HAL_ADC_GetValue(hadc);
+    adc_conversion_count++;
+  }
 }
 
 /* USER CODE END 0 */
@@ -123,9 +134,22 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  // Start PWM
   if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
   {
-    /* PWM Generation Error */
+    Error_Handler();
+  }
+
+  // Start ADC
+  if (HAL_ADC_Start(&hadc1) != HAL_OK) 
+  {
+    Error_Handler();
+  }
+
+  // Start TIM2
+  if (HAL_TIM_Base_Start(&htim2) != HAL_OK)
+  {
     Error_Handler();
   }
   /* USER CODE END 2 */
@@ -148,28 +172,20 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     
-    // Do ADC conversion
-    if (HAL_ADC_Start(&hadc1) != HAL_OK)
+    static uint32_t last_print = 0;
+    static uint32_t last_count = 0;
+    uint32_t now = HAL_GetTick();
+    if (now - last_print >= 1000)
     {
-      Error_Handler();
+      last_print = now;
+      uint32_t count = adc_conversion_count;
+      char msg[48];
+      int len = snprintf(msg, sizeof(msg), "ADC1: %u rate: %lu/s\n",
+                         ADC1ConvertedValue, (unsigned long)(count - last_count));
+      last_count = count;
+      HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
     }
 
-    if (HAL_ADC_PollForConversion(&hadc1, 10) != HAL_OK)
-    {
-      Error_Handler();
-    }
-    else
-    {
-      ADC1ConvertedValue = HAL_ADC_GetValue(&hadc1);
-      int tick = HAL_GetTick();
-      if (tick % 500 == 0) {
-        char msg[32];
-        int len = snprintf(msg, sizeof(msg), "ADC1: %u (Tick: %d)\n", ADC1ConvertedValue, tick);
-        HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
-      }
-    }
-
-    // Control servo
     servo_set_from_adc(ADC1ConvertedValue);
   }
   /* USER CODE END 3 */
