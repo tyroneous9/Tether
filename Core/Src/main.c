@@ -73,6 +73,7 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 static void servo_set_angle(uint8_t angle);
 static void servo_set_from_adc(uint16_t adc_converted_value);
+static uint8_t adc_to_angle(uint16_t adc_converted_value);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -88,6 +89,12 @@ static void servo_set_from_adc(uint16_t adc_converted_value) {
   if (adc_converted_value > 4095) adc_converted_value = 4095;
   uint32_t pulse = SERVO_MIN_US + (adc_converted_value * (SERVO_MAX_US - SERVO_MIN_US)) / 4095U;
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
+}
+
+static uint8_t adc_to_angle(uint16_t adc_converted_value) {
+  if (adc_converted_value > 4095) adc_converted_value = 4095;
+  uint8_t angle = (adc_converted_value * 180) / 4095;
+  return angle;
 }
 
 /* USER CODE END 0 */
@@ -171,16 +178,16 @@ int main(void)
       sum += adc_buf[i];
     }
     ADC1ConvertedValue = sum / 20;
-
     // The print loop operates independently on a 1 second delay.
     static uint32_t last_print = 0;
     uint32_t now = HAL_GetTick();
+    uint8_t angle = adc_to_angle(ADC1ConvertedValue);
     if (now - last_print >= 1000)
     {
       last_print = now;
-      char msg[48];
-      int len = snprintf(msg, sizeof(msg), "ADC1: %u\n",
-                         ADC1ConvertedValue);
+      char msg[16];
+      int len = snprintf(msg, sizeof(msg), "POS:%u\n",
+                         angle);
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
     }
 
