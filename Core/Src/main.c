@@ -59,7 +59,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 __IO uint16_t ADC1ConvertedValue = 0;
-__IO uint32_t adc_conversion_count = 0;
+__IO uint16_t adc_buf[20];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -73,7 +73,6 @@ static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 static void servo_set_angle(uint8_t angle);
 static void servo_set_from_adc(uint16_t adc_converted_value);
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -89,15 +88,6 @@ static void servo_set_from_adc(uint16_t adc_converted_value) {
   if (adc_converted_value > 4095) adc_converted_value = 4095;
   uint32_t pulse = SERVO_MIN_US + (adc_converted_value * (SERVO_MAX_US - SERVO_MIN_US)) / 4095U;
   __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pulse);
-}
-
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
-{
-  if (hadc->Instance == ADC1)
-  {
-    ADC1ConvertedValue = HAL_ADC_GetValue(hadc);
-    adc_conversion_count++;
-  }
 }
 
 /* USER CODE END 0 */
@@ -144,8 +134,8 @@ int main(void)
     Error_Handler();
   }
 
-  // Start ADC in interrupt mode
-  if (HAL_ADC_Start_IT(&hadc1) != HAL_OK)
+  // Start ADC in DMA mode
+  if (HAL_ADC_Start_DMA(&hadc1, (uint32_t *) adc_buf, 20) != HAL_OK)
   {
     Error_Handler();
   }
@@ -175,17 +165,22 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     
+    // Average the buffer samples
+    uint32_t sum = 0;
+    for (int i=0; i<20; i++) {
+      sum += adc_buf[i];
+    }
+    ADC1ConvertedValue = sum / 20;
+
+    // The print loop operates independently on a 1 second delay.
     static uint32_t last_print = 0;
-    static uint32_t last_count = 0;
     uint32_t now = HAL_GetTick();
     if (now - last_print >= 1000)
     {
       last_print = now;
-      uint32_t count = adc_conversion_count;
       char msg[48];
-      int len = snprintf(msg, sizeof(msg), "ADC1: %u rate: %lu/s\n",
-                         ADC1ConvertedValue, (unsigned long)(count - last_count));
-      last_count = count;
+      int len = snprintf(msg, sizeof(msg), "ADC1: %u\n",
+                         ADC1ConvertedValue);
       HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, HAL_MAX_DELAY);
     }
 
