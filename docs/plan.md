@@ -250,3 +250,23 @@ The STM32 firmware is a CubeMX-generated CMake project at the repository root. C
 
 - **Debugging writeup** (`docs/debugging.md`): at least one real story, such as something that didn't boot, a driver that oopsed, or a device tree binding that didn't match, and how it was found and fixed using `dmesg`, the serial console, or a logic analyzer.
 - **Design notes** (`docs/design.md`): the kernel/user-space boundary. Why the driver does X and the app does Y, and what was considered and rejected (e.g. "considered doing everything in user-space via raw serial, chose a driver + sysfs interface because ..."). Also worth recording: why a servo rather than a stepper, and why the main loop uses the internal ADC rather than the ADS7830.
+
+
+## Debug exercises
+1. Watch initialization happen. From the stop at main, step over (F10) down to MX_ADC1_Init(), then step into it (F11). Add hadc1 to the Watch panel and watch the fields fill in as each line runs. You're watching the CubeMX settings being applied.
+
+2. Catch DMA writing behind your back. Set a breakpoint on the sum = 0 line in the loop. When it stops, look at adc_buf in Watch. Press F5 and look again: the values have changed, but no line of your code assigns to adc_buf. Also note that halting the CPU doesn't stop the peripherals. TIM2, the ADC and the DMA keep running while you're paused, so if the view refreshes, the buffer may change while the CPU is frozen. (Debug registers can freeze timers on halt. It's worth looking up DBGMCU afterwards.)
+
+3. Read the hardware registers directly. While paused, open the extension's peripheral/registers view and expand:
+
+DMA2 → Stream 0 NDTR: transfers remaining. Pause a few times and it shows different values between 20 and 1. That's the circular mode counting down and reloading.
+TIM2 → CNT: the counter, somewhere in 0–999.
+ADC1 → DR: the latest conversion.
+TIM3 → CCR1: the servo pulse width in µs.
+4. Move the servo from the debugger. While paused, edit TIM3 → CCR1 in the register view to 1000, then 2000. TIM3 keeps running while halted, so the servo moves even though your program is frozen. This shows that peripherals are hardware state you can poke directly.
+
+5. Conditional breakpoint plus memory view. Right-click a breakpoint on the HAL_UART_Transmit line → Edit Breakpoint → condition angle == 180. Turn the knob fully and it fires. Open msg in the memory view and read the bytes. If you temporarily switch back to msg[8], you'll see the 0x00 where \n should be. That's the bug from earlier, made visible.
+
+6. Watchpoints, and their limit. Add a data breakpoint on ADC1ConvertedValue (from the Watch/Variables panel, if your version offers it). It fires whenever your code writes it. Then try the same on adc_buf[0]: it never fires, because watchpoints only see the CPU's writes, and DMA writes go around the CPU. That's worth knowing.
+
+7. since DMA is working in real time, try to do some kind of live watch and check the memory as it changes live.
